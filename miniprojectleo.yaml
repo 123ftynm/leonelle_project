@@ -1,0 +1,295 @@
+ ---
+AWSTemplateFormatVersion: '2010-09-09'
+Parameter:
+
+  MyDemoRepo:
+    Type: String
+    Default: "Leonelle_AWS_Mini_Project_DevOps_2024"
+    Description: enter your repositry name
+  
+  Bucktnam:
+    Type: String
+    Default: "Leonelle_s3"
+    Description: enter your bucket name
+
+  Reponame:
+    Type: String
+    Default: "Leonelleminiprojectrepo"
+    Description: enter your Repo name
+
+
+ 
+  ProjectName:
+    Type: String
+    Description: Name of the project
+
+
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref Bucktnam
+
+  MyRepo:
+  Type: AWS::CodeCommit::Repository
+  Properties:
+    RepositoryName: !Ref MyDemoRepo
+    RepositoryDescription: This is a repository for my project with code from MyS3Bucket.
+    Code:
+      BranchName: main
+      S3: 
+        Bucket: !Ref S3Bucket
+        Key: nodejs-app.zip
+        BranchName: main
+
+
+  MyDockerRepository:
+    Type: 'AWS::ECR::Repository'
+    Properties:
+      RepositoryName: !Ref Reponame
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: 'IMMUTABLE'
+
+
+  MyCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: MyProjectName
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: us-east-1
+          - Name: AWS_ACCOUNT_ID
+            Value: "411658317626" 
+          - Name: IMAGE_REPO_NAME
+            Value: !Ref Reponame
+          - Name: IMAGE_TAG
+            Value: latest 
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source:
+        Type: CODECOMMIT
+        Location: !GetAtt MyCodeCommitRepository.CloneUrlHttp
+      BuildSpec: |
+        version: 0.2
+
+        phases:
+          pre_build:
+            commands:
+              - echo Logging in to Amazon ECR...
+              - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+          build:
+            commands:
+              - echo Build started on `date`
+              - echo Building the Docker image...
+              - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
+          post_build:
+            commands:
+              - echo Build completed on `date`
+              - echo Pushing the Docker image...
+              - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+
+        artifacts:
+          files:
+            - buildspec.yml
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [codebuild.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:*
+                  - s3:*
+                  - ecr:GetLoginPassword
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:CompleteLayerUpload
+                  - ecr:GetAuthorizationToken
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource: '*'
+
+
+  MyEcsCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: 'MyCluster'
+
+  MyEcsTaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: 'my-task-family'
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: 'awsvpc'
+      RequiresCompatibilities:
+        - 'FARGATE'
+      ExecutionRoleArn: !Ref MyExecutionRole
+      ContainerDefinitions:
+        - Name: 'my-container'
+          Image: 'my-docker-image'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 80
+              HostPort: 80
+          LogConfiguration:
+            LogDriver: 'awslogs'
+            Options:
+              awslogs-group: '/ecs/my-logs'
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: 'ecs'
+
+  MyExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: 'ecsTaskExecutionRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'ecs-tasks.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'AmazonECSTaskExecutionRolePolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+
+
+  AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CodeDeploy Application and Deployment Group
+
+Resources:
+  CodeDeployApplication:
+    Type: 'AWS::CodeDeploy::Application'
+    Properties:
+      ApplicationName: 'MyApplication'
+
+  CodeDeployDeploymentGroup:
+    Type: 'AWS::CodeDeploy::DeploymentGroup'
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      DeploymentGroupName: 'MyDeploymentGroup'
+      ServiceRoleArn: 'arn:aws:iam::123456789012:role/CodeDeployServiceRole'
+      DeploymentConfigName: 'CodeDeployDefault.OneAtATime'
+      DeploymentStyle:
+        DeploymentType: 'IN_PLACE'
+        DeploymentOption: 'WITHOUT_TRAFFIC_CONTROL'
+      TriggerConfigurations:
+        - TriggerName: 'MyTrigger'
+          TriggerTargetArn: 'arn:aws:sns:us-west-2:123456789012:MySNSTopic'
+          TriggerEvents:
+            - 'DeploymentSuccess'
+            - 'DeploymentFailure'
+
+
+
+  CodeCommitRepository:
+    Type: 'AWS::CodeCommit::Repository'
+    Properties:
+      RepositoryName: !Ref ProjectName
+
+  # Build Stage - CodeBuild project
+  CodeBuildProject:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Name: !Sub '${ProjectName}-build'
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: 'aws/codebuild/standard:4.0'
+        Type: LINUX_CONTAINER
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+
+  # Deployment Stage - CodeDeploy application
+  CodeDeployApplication:
+    Type: 'AWS::CodeDeploy::Application'
+    Properties:
+      ApplicationName: !Ref ProjectName
+
+  # Pipeline definition
+  Pipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: '1'
+                Provider: CodeCommit
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                RepositoryName: !Ref CodeCommitRepository
+                BranchName: master
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: '1'
+                Provider: CodeDeploy
+              InputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ApplicationName: !Ref CodeDeployApplication
+                DeploymentGroupName: ProdDeploymentGroup
+
+  
+
+Outputs:
+  PipelineUrl:
+    Description: 'URL of the created pipeline'
+    Value: !Sub 'https://console.aws.amazon.com/codesuite/codepipeline/pipelines/${Pipeline}/view'
+
+     
+        
+
